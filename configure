@@ -2380,7 +2380,7 @@ if test "$zondafs" != "no" ; then
   else
     # Try to compile a test program
     cat > $TMPC << EOF
-#include <zonda_fs.h>
+#include "src/file_client/zonda_fs_c.h"
 
 int main(int argc, char **argv)
 {
