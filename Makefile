@@ -157,7 +157,7 @@ ifdef CONFIG_ZONDAFS
                  $(FIO_ZONDAFS_PATH)/deps/fmt/lib/libfmt.a \
                  $(FIO_ZONDAFS_PATH)/deps/isal/lib/libisal.a \
                  $(FIO_ZONDAFS_PATH)/deps/gflags/lib/libgflags.a \
-                 -lprotobuf -lrt -lcrypto -lssl -lleveldb -lstdc++
+                 -lprotobuf -lrt -lcrypto -lssl -lleveldb -lstdc++ -lm
   zondafs_CFLAGS = -I$(FIO_ZONDAFS_PATH)/deps/brpc/include \
                    -I$(FIO_ZONDAFS_PATH)/deps/file_client/include \
                    -I$(FIO_ZONDAFS_PATH)/deps/fmt/include \
