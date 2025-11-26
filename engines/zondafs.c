@@ -104,13 +104,11 @@ static enum fio_q_status fio_zondafs_queue(struct thread_data *td,
 	struct zondafsio_data *zd = td->io_ops_data;
 	zonda_fs_file_t* file = NULL;
 	zonda_error_code_t code;
-	int ret;
-	unsigned long offset;
 	unsigned long bytes_written = 0, bytes_read = 0;
     file = zd->file;
 
 	if (io_u->ddir == DDIR_READ) {
-		code = zonda_fs_file_read_at(file, io_u->xfer_buflen, io_u->offset, io_u->xfer_buflen, &bytes_read);
+		code = zonda_fs_file_read_at(file, io_u->xfer_buflen, io_u->offset, io_u->xfer_buf, &bytes_read);
         if(code != 0 && code != 23014) {
           	io_u->error = EIO;
 			return FIO_Q_COMPLETED;
