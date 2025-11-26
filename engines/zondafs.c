@@ -5,7 +5,7 @@
 #include "../optgroup.h"
 
 /* zonda_fs client headers */
-#include "zonda_fs_c.h"
+#include "src/file_client/zonda_fs_c.h"
 
 struct zondafsio_data {
 	zonda_fs_client_t* client;

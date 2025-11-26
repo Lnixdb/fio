@@ -2397,7 +2397,7 @@ int main(int argc, char **argv)
 }
 EOF
     zondafs_cflags="-I$zondafs_base_path/deps/brpc/include -I$zondafs_base_path/deps/file_client/include -I$zondafs_base_path/deps/fmt/include -I$zondafs_base_path/deps/isal/include -I$zondafs_base_path/deps/gflags/include -I$zondafs_base_path"
-    zondafs_ldflags="$zondafs_lib_path/file_client/lib/libfile_client.a $zondafs_lib_path/brpc/lib/libbrpc.a $zondafs_lib_path/fmt/lib/libfmt.a $zondafs_lib_path/isal/lib/libisal.a $zondafs_lib_path/gflags/lib/libgflags.a -lprotobuf -lrt -lcrypto -lssl -lleveldb"
+    zondafs_ldflags="$zondafs_lib_path/file_client/lib/libfile_client.a $zondafs_lib_path/brpc/lib/libbrpc.a $zondafs_lib_path/fmt/lib/libfmt.a $zondafs_lib_path/isal/lib/libisal.a $zondafs_lib_path/gflags/lib/libgflags.a -lprotobuf -lrt -lcrypto -lssl -lleveldb -lstdc++"
     
     if compile_prog "$zondafs_cflags" "$zondafs_ldflags" "zondafs"; then
       zondafs="yes"
