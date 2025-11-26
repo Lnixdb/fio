@@ -13,6 +13,7 @@ struct zondafsio_data {
 };
 
 struct zondafsio_options {
+	void *pad;			/* needed because offset can't be 0 for an option defined used offsetof */
     char *master;
     char *cluster;
     char *client;
