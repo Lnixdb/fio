@@ -74,7 +74,7 @@ static struct fio_option options[] = {
         .lname	= "zonda2 fs master addr",
         .type	= FIO_OPT_STR_STORE,
         .off1   = offsetof(struct zondafsio_options, master),
-        .def    = "",
+        .def    = "list://127.0.0.1:28600,127.0.0.1:28601,127.0.0.1:28602",
         .help	= "Master addr of the zonda2 fs",
         .category = FIO_OPT_C_ENGINE,
         .group	= FIO_OPT_G_ZONDAFS,
@@ -151,7 +151,13 @@ static enum fio_q_status fio_zondafs_queue(struct thread_data *td,
 	zonda_fs_file_t* file = NULL;
 	zonda_error_code_t code;
 	unsigned long bytes_written = 0, bytes_read = 0;
-    file = zd->file;
+
+	if (!zd || !zd->file) {
+		log_err("zondafs: io_ops_data or file is NULL\n");
+		io_u->error = EINVAL;
+		return FIO_Q_COMPLETED;
+	}
+	file = zd->file;
 
 	if (io_u->ddir == DDIR_READ) {
 		code = zonda_fs_file_read_at(file, io_u->xfer_buflen, io_u->offset, io_u->xfer_buf, &bytes_read);
@@ -185,11 +191,23 @@ int fio_zondafs_open_file(struct thread_data *td, struct fio_file *f)
 
 	zonda_fs_file_t* file = NULL;
 	zonda_error_code_t code;
+	uint32_t flags;
 
-	uint32_t flags = ZONDA_FS_OPEN_FLAGS_RDWR | ZONDA_FS_OPEN_FLAGS_CREAT;
+	if (!zd) {
+		log_err("zondafs: io_ops_data is NULL, init() may have failed\n");
+		return EINVAL;
+	}
+
+	if (!zd->client) {
+		log_err("zondafs: client is NULL, init() may have failed. "
+			"Check if fio_zondafs_init() was called and succeeded.\n");
+		return EINVAL;
+	}
+
+	flags = ZONDA_FS_OPEN_FLAGS_RDWR | ZONDA_FS_OPEN_FLAGS_CREAT;
 	code = zonda_fs_client_open(zd->client, f->file_name, flags, &file);
 	if(code != 0) {
-		log_err("zondafs: unable to open");
+		log_err("zondafs: unable to open file %s, code=%d\n", f->file_name, code);
 		return code;
 	}
 	zd->file = file;
@@ -200,21 +218,46 @@ int fio_zondafs_close_file(struct thread_data *td, struct fio_file *f)
 {
 	struct zondafsio_data *zd = td->io_ops_data;
 
-	zonda_fs_file_close(zd->file);
-	zonda_fs_file_destroy(zd->file);
-	zonda_fs_client_destroy(zd->client);
+	if (zd && zd->file) {
+		zonda_fs_file_close(zd->file);
+		zonda_fs_file_destroy(zd->file);
+		zd->file = NULL;  // 防止重复释放
+	}
 	return 0;
+}
+
+static void fio_zondafs_cleanup(struct thread_data *td)
+{
+	struct zondafsio_data *zd = td->io_ops_data;
+	if (zd) {
+		if (zd->file) {
+			log_info("zondafs: closing remaining file in cleanup\n");
+			zonda_fs_file_close(zd->file);
+			zonda_fs_file_destroy(zd->file);
+			zd->file = NULL;
+		}
+		if (zd->client) {
+			zonda_fs_client_destroy(zd->client);
+			zd->client = NULL;
+		}
+		free(zd);
+		td->io_ops_data = NULL;
+	}
 }
 
 static int fio_zondafs_setup(struct thread_data *td)
 {
-	struct zondafsio_data *zd;
+	struct zondafsio_data *zd = td->io_ops_data;
 	struct fio_file *f;
 	int i;
 	uint64_t file_size, total_file_size;
 
-	if (!td->io_ops_data) {
+	if (!zd) {
 		zd = calloc(1, sizeof(*zd));
+		if (!zd) {
+			log_err("zondafs: unable to allocate io_ops_data\n");
+			return ENOMEM;
+		}
 		td->io_ops_data = zd;
 	}
 
@@ -247,23 +290,24 @@ static int fio_zondafs_init(struct thread_data *td)
 	zonda_fs_conn_config_t config = {
 		.master_addr = option->master,
 		.cluster_id = option->cluster,
-		.client_id = option->client,
+		.client_id = option->client ? option->client : "fio_client",
 		.fence_dir = option->fence_dir,
-		.log_path = option->log_path,
-		.role = option->role,
-		.ip = option->ip,
+		.log_path = option->log_path ? option->log_path : "./logs",
+		.role = option->role ? option->role : "fio_role",
+		.ip = option->ip ? option->ip : "127.0.0.1",
 	};
-
 	code = zonda_fs_client_new(&config, &client);
     if(code != 0) {
-    	log_err("zondafs: unable to new client\n");
+    	log_err("zondafs: unable to new client, code=%d\n", code);
     	return EINVAL;
     }
 	zd->client = client;
 
 	code = zonda_fs_client_fence_directory(client, option->fence_dir);
 	if(code != 0) {
-		log_err("zondafs: unable to fence dir\n");
+		log_err("zondafs: unable to fence dir, code=%d\n", code);
+		zonda_fs_client_destroy(client);
+		zd->client = NULL;
 		return EINVAL;
 	}
 	return 0;
@@ -278,6 +322,7 @@ FIO_STATIC struct ioengine_ops ioengine = {
 	.queue = fio_zondafs_queue,
 	.open_file = fio_zondafs_open_file,
 	.close_file = fio_zondafs_close_file,
+	.cleanup = fio_zondafs_cleanup,
 	.option_struct_size	= sizeof(struct zondafsio_options),
 	.options		= options,
 };
