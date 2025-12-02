@@ -1,5 +1,7 @@
 #include <stddef.h>
 #include <math.h>
+#include <libgen.h>
+#include <stdio.h>
 
 #include "../fio.h"
 #include "../optgroup.h"
@@ -283,9 +285,10 @@ static int fio_zondafs_init(struct thread_data *td)
 {
 	struct zondafsio_data *zd = td->io_ops_data;
 	struct zondafsio_options *option = td->eo;
-
+	struct fio_file *f;
 	zonda_fs_client_t* client = NULL;
 	zonda_error_code_t code;
+	int i;
 
 	zonda_fs_conn_config_t config = {
 		.master_addr = option->master,
@@ -303,12 +306,24 @@ static int fio_zondafs_init(struct thread_data *td)
     }
 	zd->client = client;
 
-	code = zonda_fs_client_fence_directory(client, option->fence_dir);
-	if(code != 0) {
-		log_err("zondafs: unable to fence dir, code=%d\n", code);
-		zonda_fs_client_destroy(client);
-		zd->client = NULL;
-		return EINVAL;
+    for_each_file(td, f, i) {
+      	char *path_copy = strdup(f->file_name);
+        if (!path_copy) {
+        	log_err("zondafs: strdup file name fail\n");
+			zonda_fs_client_destroy(client);
+			zd->client = NULL;
+			return EINVAL;
+    	}
+        char *fence_dir = dirname(path_copy);
+		code = zonda_fs_client_fence_directory(client, fence_dir);
+		if(code != 0) {
+			log_err("zondafs: unable to fence dir, code=%d\n", code);
+			zonda_fs_client_destroy(client);
+			zd->client = NULL;
+            free(path_copy);
+			return EINVAL;
+		}
+        free(path_copy);
 	}
 	return 0;
 }
