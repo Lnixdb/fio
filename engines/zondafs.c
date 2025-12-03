@@ -1,7 +1,9 @@
 #include <stddef.h>
+#include <stdbool.h>
 #include <math.h>
 #include <libgen.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #include "../fio.h"
 #include "../optgroup.h"
@@ -9,50 +11,11 @@
 /* zonda_fs client headers */
 #include "src/file_client/zonda_fs_c.h"
 
-/*
- * ZondaFS I/O Engine for FIO
- *
- * USAGE EXAMPLES:
- *
- * 1. Append Write Test (追加写测试)
- *    Performs sequential write operations with append mode:
- *
- *    ./fio --name=append_test \
- *          --ioengine=zondafs \
- *          --rw=write \
- *          --bs=4k \
- *          --size=1G \
- *          --numjobs=1 \
- *          --iodepth=1 \
- *          --filename=/zonda2/fio/testfile \
- *          --append=1 \
- *          --master=list://127.0.0.1:28600,127.0.0.1:28601,127.0.0.1:28602 \
- *          --cluster=test_cluster_1 \
- *          --fence_dir=/zonda2/fio
- *
- * 2. Random Read Test (随机读测试)
- *    Performs random read operations on an existing file:
- *
- *    ./fio --name=randread_test \
- *          --ioengine=zondafs \
- *          --rw=randread \
- *          --bs=4k \
- *          --size=1G \
- *          --numjobs=1 \
- *          --filename=/zonda2/fio/testfile \
- *          --master=list://127.0.0.1:28600,127.0.0.1:28601,127.0.0.1:28602 \
- *          --cluster=test_cluster_1 \
- *          --fence_dir=/zonda2/fio
- *
- * KEY PARAMETERS:
- *   --master      : Master address list (required)
- *   --cluster     : Cluster ID (required)
- *   --fence_dir   : Fence directory path (required)
- *   --client      : Client ID (default: "fio_client")
- *   --log_path    : Log file path (default: "./logs")
- *   --role        : Client role (default: "fio_role")
- *   --ip          : Host IP for fence (default: "127.0.0.1")
- */
+/* Shared client for all threads */
+static zonda_fs_client_t* shared_client = NULL;
+static int num_threads = 0;
+static pthread_mutex_t zondafs_mutex = PTHREAD_MUTEX_INITIALIZER;
+static bool client_initialized = false;
 
 struct zondafsio_data {
 	zonda_fs_client_t* client;
@@ -238,13 +201,21 @@ static void fio_zondafs_cleanup(struct thread_data *td)
 			zonda_fs_file_destroy(zd->file);
 			zd->file = NULL;
 		}
-		if (zd->client) {
-			zonda_fs_client_destroy(zd->client);
-			zd->client = NULL;
-		}
 		free(zd);
 		td->io_ops_data = NULL;
 	}
+
+	/* Decrement thread count and destroy shared client if last thread */
+	pthread_mutex_lock(&zondafs_mutex);
+	num_threads--;
+	if (client_initialized && num_threads == 0) {
+		if (shared_client) {
+			zonda_fs_client_destroy(shared_client);
+			shared_client = NULL;
+		}
+		client_initialized = false;
+	}
+	pthread_mutex_unlock(&zondafs_mutex);
 }
 
 static int fio_zondafs_setup(struct thread_data *td)
@@ -286,45 +257,56 @@ static int fio_zondafs_init(struct thread_data *td)
 	struct zondafsio_data *zd = td->io_ops_data;
 	struct zondafsio_options *option = td->eo;
 	struct fio_file *f;
-	zonda_fs_client_t* client = NULL;
 	zonda_error_code_t code;
-	int i;
-    char *fence_dir;
+	int i, rc = 0;
+	char *fence_dir;
 
-	zonda_fs_conn_config_t config = {
-		.master_addr = option->master,
-		.cluster_id = option->cluster,
-		.client_id = option->client ? option->client : "fio_client",
-		.fence_dir = option->fence_dir,
-		.log_path = option->log_path ? option->log_path : "./logs",
-		.role = option->role ? option->role : "fio_role",
-		.ip = option->ip ? option->ip : "127.0.0.1",
-	};
-	code = zonda_fs_client_new(&config, &client);
-    if(code != 0) {
-    	log_err("zondafs: unable to new client, code=%d\n", code);
-    	return EINVAL;
-    }
-	zd->client = client;
+	if (!zd) {
+		log_err("zondafs: io_ops_data is NULL\n");
+		return EINVAL;
+	}
 
-    for_each_file(td, f, i) {
-      	char *path_copy = strdup(f->file_name);
-        if (!path_copy) {
-        	log_err("zondafs: strdup file name fail\n");
-			zonda_fs_client_destroy(client);
-			zd->client = NULL;
-			return EINVAL;
-    	}
-        fence_dir = dirname(path_copy);
-		code = zonda_fs_client_fence_directory(client, fence_dir);
-		if(code != 0) {
-			log_err("zondafs: unable to fence dir, code=%d\n", code);
-			zonda_fs_client_destroy(client);
-			zd->client = NULL;
-            free(path_copy);
+	/* 多线程使用同一个 client(shared_client) 是因为 zonds2 c++ logger 是单例模式.
+	 * 每调用一次 zonda_fs_client_new, logger 启动一个后台 brpc routine, 导致 coredump
+     */
+	pthread_mutex_lock(&zondafs_mutex);
+	if (!client_initialized) {
+		zonda_fs_conn_config_t config = {
+			.master_addr = option->master,
+			.cluster_id = option->cluster,
+			.client_id = option->client ? option->client : "fio_client",
+			.fence_dir = option->fence_dir,
+			.log_path = option->log_path ? option->log_path : "./logs",
+			.role = option->role ? option->role : "fio_role",
+			.ip = option->ip ? option->ip : "127.0.0.1",
+		};
+
+		code = zonda_fs_client_new(&config, &shared_client);
+		if (code != 0) {
+			log_err("zondafs: unable to new client, code=%d\n", code);
+			pthread_mutex_unlock(&zondafs_mutex);
 			return EINVAL;
 		}
-        free(path_copy);
+		client_initialized = true;
+	}
+	zd->client = shared_client;
+    num_threads++;
+	pthread_mutex_unlock(&zondafs_mutex);
+
+	for_each_file(td, f, i) {
+		char *path_copy = strdup(f->file_name);
+		if (!path_copy) {
+			log_err("zondafs: strdup file name fail\n");
+			return EINVAL;
+		}
+		fence_dir = dirname(path_copy);
+		code = zonda_fs_client_fence_directory(shared_client, fence_dir);
+		if (code != 0) {
+			log_err("zondafs: unable to fence dir, code=%d\n", code);
+			free(path_copy);
+			return EINVAL;
+		}
+		free(path_copy);
 	}
 	return 0;
 }
