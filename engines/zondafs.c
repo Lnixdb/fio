@@ -258,7 +258,7 @@ static int fio_zondafs_init(struct thread_data *td)
 	struct zondafsio_options *option = td->eo;
 	struct fio_file *f;
 	zonda_error_code_t code;
-	int i, rc = 0;
+	int i;
 	char *fence_dir;
 
 	if (!zd) {
